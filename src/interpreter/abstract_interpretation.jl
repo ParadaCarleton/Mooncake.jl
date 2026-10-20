@@ -586,14 +586,15 @@ end
 
     `_copy(rule)` whose Lazy/Dynamic rules build at `interp.world`. A rule carried across a
     world move behaves as one freshly derived there: dynamic dispatch sees the methods of the
-    fetching world.
+    fetching world. `rule` comes out of the untyped rule cache, so this compiles once rather
+    than once per rule type.
     """
-    function copy_rule_at(interp::MooncakeInterpreter, rule)
-        return Base.ScopedValues.with(() -> _copy(rule), REBASED_WORLD => interp.world)
+    function copy_rule_at(interp::MooncakeInterpreter, @nospecialize(rule))
+        return Base.ScopedValues.@with REBASED_WORLD => interp.world _copy(rule)
     end
 else
     pinned_world(world::UInt) = world
-    copy_rule_at(::MooncakeInterpreter, rule) = _copy(rule)
+    copy_rule_at(::MooncakeInterpreter, @nospecialize(rule)) = _copy(rule)
 end
 
 """

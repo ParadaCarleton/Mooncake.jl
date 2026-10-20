@@ -135,10 +135,18 @@ end
     end
 end
 
-# Copy forward rule with recursively copied captures
-function _copy(x::P) where {P<:DerivedFRule}
-    return P(replace_captures(x.fwd_oc, _copy(x.fwd_oc.oc.captures)))
+# Copy forward rule with recursively copied captures. A rule is copied only when it is
+# fetched from the untyped rule cache, so this compiles once rather than once per rule type.
+function _copy(@nospecialize(x::DerivedFRule))
+    return typeof(x)(replace_captures(x.fwd_oc, _copy_captures(x.fwd_oc.oc.captures)))
 end
+
+"""
+    _copy_captures(captures::Tuple)
+
+`_copy` of each of a derived rule's `captures`, compiled once for every captures type.
+"""
+_copy_captures(@nospecialize(captures::Tuple)) = Tuple(Any[_copy(c) for c in captures])
 
 _isva(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = isva
 _nargs(::DerivedFRule{P,T,isva,nargs}) where {P,T,isva,nargs} = nargs
@@ -536,7 +544,7 @@ mutable struct LazyFRule{primal_sig,Trule}
     end
 end
 
-_copy(x::P) where {P<:LazyFRule} = P(x.mi, x.debug_mode, pinned_world(x.world))
+_copy(@nospecialize(x::LazyFRule)) = typeof(x)(x.mi, x.debug_mode, pinned_world(x.world))
 
 # On Julia 1.10, the generic __call_rule fallback is @stable-checked and returns Any for
 # LazyFRule, triggering TypeInstabilityError when dispatch_doctor_mode = "error".
