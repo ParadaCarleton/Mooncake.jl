@@ -571,14 +571,24 @@ end
     return isdefined(rule, :rule) ? __call_rule(rule.rule, args) : _build_rule!(rule, args)
 end
 
-# Build at the world `Trule` was predicted at: a later world can re-tighten `mi`'s inferred
-# return type, giving a rule that no longer matches `Trule` and fails to `convert` (#1218).
-@noinline function _build_rule!(rule::LazyFRule{sig,Trule}, args) where {sig,Trule}
+@noinline function _build_rule!(rule::LazyFRule, args)
+    _build_lazy_rule!(rule)
+    return __call_rule(rule.rule, args)
+end
+
+"""
+    _build_lazy_rule!(rule::LazyFRule)
+
+Derive `rule`'s rule at the world `Trule` was predicted at: a later world can re-tighten
+`mi`'s inferred return type, giving a rule that no longer matches `Trule` and fails to
+`convert` (#1218). It runs once per rule, so it compiles once for every rule type.
+"""
+function _build_lazy_rule!(@nospecialize(rule::LazyFRule))
     interp = get_interpreter(ForwardMode, rule.world)
     rule.rule = build_frule(
         interp, rule.mi; debug_mode=rule.debug_mode, skip_world_age_check=true
     )
-    return __call_rule(rule.rule, args)
+    return nothing
 end
 
 function dual_ret_type(primal_ir::IRCode)
