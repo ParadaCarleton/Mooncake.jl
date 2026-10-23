@@ -30,6 +30,7 @@ using CUDA: cuBLAS
 using CUDA: cuSPARSE
 using CUDA: cuSOLVER
 using CUDA.CUDACore.GPUArrays: derive, unsafe_free!
+using CUDA.CUDACore: GPUArrays
 using Base.Broadcast: Broadcasted
 # Statistics is a weakdep triggering this extension alongside CUDA; always loaded
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
@@ -95,6 +96,24 @@ import Mooncake.TestUtils:
 const CuFloatArray = CuArray{<:IEEEFloat}
 const CuComplexArray = CuArray{<:Complex{<:IEEEFloat}}
 const CuMaybeComplexArray = Union{CuFloatArray,CuComplexArray}
+
+# Stop at the random fill: tracing GPUArrays' implementation enters a kernel launch,
+# whose memory adaptation cannot preserve the array's derivative storage.
+# Obtain CUDA.default_rng() outside differentiated code: its task-local lookup is unsupported.
+for f in (rand!, randn!)
+    @eval @is_primitive MinimalCtx Tuple{typeof($f),GPUArrays.RNG,CuMaybeComplexArray}
+    @eval function frule!!(
+        ::Dual{typeof($f)}, rng::Dual{<:GPUArrays.RNG}, x::Dual{<:CuMaybeComplexArray}
+    )
+        return Mooncake._rand_fill_frule($f, x, rng)
+    end
+    @eval function rrule!!(
+        ::CoDual{typeof($f)}, rng::CoDual{<:GPUArrays.RNG}, x::CoDual{<:CuMaybeComplexArray}
+    )
+        return Mooncake._rand_fill_rrule($f, x, rng)
+    end
+end
+
 # Index and mask arrays. Deliberately a whitelist rather than a predicate on
 # tangent_type(eltype), which cannot be written as a dispatch signature without also
 # capturing the differentiable eltypes handled above. An eltype outside it whose
@@ -878,6 +897,54 @@ function rrule!!(
         return NoRData(), NoRData(), NoRData()
     end
     return CoDual(y, dy_out), getindex_pb!!
+end
+
+const _CuSliceIndex = Union{Integer,AbstractRange{<:Integer},Colon}
+@is_primitive(
+    MinimalCtx,
+    Tuple{
+        typeof(getindex),
+        CuMaybeComplexArray,
+        _CuSliceIndex,
+        _CuSliceIndex,
+        Vararg{_CuSliceIndex},
+    },
+)
+function frule!!(
+    ::Dual{typeof(getindex)},
+    x::Dual{<:CuMaybeComplexArray},
+    i::Dual{<:_CuSliceIndex},
+    j::Dual{<:_CuSliceIndex},
+    inds::Vararg{Dual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    return Dual(px[I...], dx[I...])
+end
+function rrule!!(
+    ::CoDual{typeof(getindex)},
+    x::CoDual{<:CuMaybeComplexArray},
+    i::CoDual{<:_CuSliceIndex},
+    j::CoDual{<:_CuSliceIndex},
+    inds::Vararg{CoDual{<:_CuSliceIndex}},
+)
+    I = map(primal, (i, j, inds...))
+    all(k -> k isa Integer, I) && _throw_gpu_argument_error(_SCALAR_IDX_MSG)
+    px, dx = arrayify(x)
+    y = px[I...]
+    dy = zero(y)
+    function getindex_slice_pb!!(::NoRData)
+        if all(k -> k isa Colon || allunique(k), I)
+            view(dx, I...) .+= dy
+        else
+            lin_dx = similar(dy, Int)
+            lin_dx .= view(LinearIndices(dx), I...)
+            _gpu_scatter_add!(dx, lin_dx, dy)
+        end
+        return ntuple(_ -> NoRData(), length(I) + 2)
+    end
+    return CoDual(y, dy), getindex_slice_pb!!
 end
 
 # norm: d(norm(x)) = Re(dot(x, dx)) / norm(x)  (valid for both real and complex x)
