@@ -581,6 +581,9 @@ end
     """
     pinned_world(world::UInt) = REBASED_WORLD[] == 0 ? world : REBASED_WORLD[]
 
+    "Whether a `copy_rule_at` is rebasing rules to the world of the interpreter that fetched them."
+    rebasing() = REBASED_WORLD[] != 0
+
     """
         copy_rule_at(interp::MooncakeInterpreter, rule)
 
@@ -593,6 +596,7 @@ end
     end
 else
     pinned_world(world::UInt) = world
+    rebasing() = false
     copy_rule_at(::MooncakeInterpreter, rule) = _copy(rule)
 end
 

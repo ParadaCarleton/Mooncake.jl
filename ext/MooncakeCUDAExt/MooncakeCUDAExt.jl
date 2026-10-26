@@ -37,6 +37,7 @@ using Base.Broadcast: Broadcasted
 # transitively via GPUArrays anyway, just needed for Aqua's stale-deps check.
 import Statistics: mean, varm
 import Mooncake:
+    FloatOrComplex as CuFloatOrComplex,
     MinimalCtx,
     DefaultCtx,
     frule!!,
@@ -121,7 +122,6 @@ end
 
 const CuMaybeComplexVec = Union{CuArray{<:IEEEFloat,1},CuArray{<:Complex{<:IEEEFloat},1}}
 const CuMaybeComplexMat = Union{CuArray{<:IEEEFloat,2},CuArray{<:Complex{<:IEEEFloat},2}}
-const CuFloatOrComplex = Union{IEEEFloat,Complex{<:IEEEFloat}}
 const CuGpuSumFArray = Union{
     CuFloatArray,
     CuComplexArray,
@@ -249,12 +249,12 @@ end
 )
 function frule!!(
     ::Dual{typeof(unsafe_convert)}, ::Dual{Type{CuPtr{T}}}, x::Dual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return Dual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, tangent(x)))
 end
 function rrule!!(
     ::CoDual{typeof(unsafe_convert)}, ::CoDual{Type{CuPtr{T}}}, x::CoDual{X,X}
-) where {T<:Union{IEEEFloat,Complex{<:IEEEFloat}},X<:CuArray{T}}
+) where {T<:CuFloatOrComplex,X<:CuArray{T}}
     return CoDual(unsafe_convert(CuPtr{T}, primal(x)), unsafe_convert(CuPtr{T}, x.dx)),
     _nopb(Val(3))
 end
@@ -1786,13 +1786,16 @@ for (_fn, _beat) in ((:maximum, :<), (:minimum, :>))
     end
 end
 
-# Rule for `unsafe_copyto!(dest, doffs, src, soffs, n)` on GPU arrays.
-# This function contains try/catch blocks (UpsilonNodes) from `context!(...)` that
-# Mooncake cannot trace. It implements a GPU memcpy — the gradient is identity:
-# accumulate the destination tangent into the source tangent over the same range.
-#
-# Forward: copy both primal and tangent with the same offsets.
-# Backward: accumulate ddest[doffs:doffs+n-1] into dsrc[soffs:soffs+n-1], then zero ddest range.
+function _gpu_swap_kernel!(x, y)
+    i = (CUDACore.blockIdx().x - 1) * CUDACore.blockDim().x + CUDACore.threadIdx().x
+    @inbounds if i <= length(x)
+        x[i], y[i] = y[i], x[i]
+    end
+    return nothing
+end
+
+# CUDA's context setup contains try/catch that Mooncake cannot trace, so the copy
+# needs explicit rules.
 @is_primitive(
     MinimalCtx,
     Tuple{
@@ -1837,10 +1840,16 @@ function rrule!!(
     ddest_copy = copy(view(ddest, dest_range))
     unsafe_copyto!(pdest, doffs_v, psrc, soffs_v, n_v)
     function unsafe_copyto!_pb!!(::NoRData)
-        # Accumulate gradient into src tangent, then restore dest to pre-mutation state.
-        view(dsrc, src_range) .+= view(ddest, dest_range)
         copyto!(view(pdest, dest_range), pdest_copy)
-        copyto!(view(ddest, dest_range), ddest_copy)
+        # Restore the destination before accumulating into a possibly overlapping source.
+        if n_v > 0
+            threads = min(n_v, 256)
+            blocks = cld(n_v, threads)
+            CUDACore.@cuda threads = threads blocks = blocks _gpu_swap_kernel!(
+                view(ddest, dest_range), ddest_copy
+            )
+        end
+        view(dsrc, src_range) .+= ddest_copy
         return NoRData(), NoRData(), NoRData(), NoRData(), NoRData(), NoRData()
     end
     return dest, unsafe_copyto!_pb!!
@@ -3865,8 +3874,7 @@ end
     pa, t
 )[2]
 # Scalar variables broadcast as a uniform constant; their tangent is the scalar itself.
-@inline _leaf_effective_tangent(::IEEEFloat, t) = t
-@inline _leaf_effective_tangent(::Complex{<:IEEEFloat}, t) = t
+@inline _leaf_effective_tangent(::CuFloatOrComplex, t) = t
 
 struct _GpuBroadcastCastDiff{T,PA,D}
     primal_arg::PA

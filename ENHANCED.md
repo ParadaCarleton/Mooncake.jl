@@ -14,6 +14,9 @@ Order (steps 1-4 each fast-forward the one before; later steps merge into the br
 5. A merge of chalk-lab `main` (v0.5.65).
 6. A merge of `friendly-array-input`: chalk-lab/Mooncake.jl#1366, forward mode accepts array
    tangents of another array type (1ddc8b2, 526cd8f).
+7. A merge of `shared-forward-rules` (6f300598, on chalk-lab `main` b00fb6a): a derived forward
+   rule without per-call state is shared rather than copied. With step 3, a cache fetch shares one
+   copy rebased to the fetching world (`shared_rule_at`), made on that world's first fetch.
 
 Left out: `scopedvalue-zero-derivative` (#1346, one commit 1dc9f89, closed unmerged). A zero
 derivative for reading a `ScopedValue` is wrong whenever the scoped value depends on the input, so
