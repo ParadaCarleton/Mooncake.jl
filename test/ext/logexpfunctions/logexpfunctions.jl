@@ -2,7 +2,7 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.develop(; path=joinpath(@__DIR__, "..", "..", ".."))
 
-using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, Test
+using AllocCheck, LinearAlgebra, LogExpFunctions, Mooncake, StableRNGs, StaticArrays, Test
 using Mooncake.TestUtils: test_rule
 using Mooncake.Nfwd: NDual
 
@@ -205,5 +205,20 @@ sr(n::Int) = StableRNG(n)
                 rule, (dy, Mooncake.NoTangent()), (zero(T), one(T))
             ) == (zero(T), T(2))
         end
+    end
+end
+
+# Stack-allocated arrays have no `arrayify` method; forward mode must still agree with the
+# `Vector` rule, including at a tie of unequal tangents (derivative 1.5 for `(t, 2t - 1)`).
+@testset "logsumexp forward mode on SVector" begin
+    for T in (Float32, Float64), t in (one(T), T(0.3))
+        vector_logsumexp(s) = logsumexp([s, 2s - 1])
+        static_logsumexp(s) = logsumexp(SVector(s, 2s - 1))
+        expected = Mooncake.value_and_derivative!!(
+            Mooncake.build_frule(vector_logsumexp, t), (vector_logsumexp, Mooncake.NoTangent()), (t, one(T))
+        )
+        @test Mooncake.value_and_derivative!!(
+            Mooncake.build_frule(static_logsumexp, t), (static_logsumexp, Mooncake.NoTangent()), (t, one(T))
+        ) == expected
     end
 end

@@ -19,7 +19,9 @@ import Mooncake:
     NoRData,
     extract,
     nan_tangent_guard,
-    arrayify
+    arrayify,
+    NoCache,
+    tangent_to_primal_internal!!
 using Mooncake.Nfwd: NDual, _promote_matching_nduals
 
 # ── NDual performance fixes ───────────────────────────────────────────────────
@@ -228,7 +230,13 @@ end
 function frule!!(
     ::Dual{typeof(logsumexp)}, x::Dual{<:AbstractArray{P}}
 ) where {P<:IEEEFloat}
-    _x, _dx = arrayify(x)
+    # Stack-allocated arrays (e.g. `SVector`) have no `arrayify` method; read their tangent
+    # back as a primal-typed array instead.
+    _x, _dx = if isbitstype(typeof(primal(x)))
+        primal(x), tangent_to_primal_internal!!(primal(x), tangent(x), NoCache())
+    else
+        arrayify(x)
+    end
     y = logsumexp(_x)
     dy = zero(P)
     # same as dy = dot(_dx, exp.(_x .- y)) but manually looped over to avoid allocations
